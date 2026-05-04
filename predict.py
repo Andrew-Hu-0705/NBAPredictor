@@ -74,7 +74,10 @@ def build_feature_vector(home_team: str, away_team: str, feature_cols: list) -> 
     stat_keys = [
         "ROLL_PTS", "ROLL_REB", "ROLL_AST", "ROLL_TOV",
         "ROLL_FG_PCT", "ROLL_FG3_PCT", "ROLL_FT_PCT",
-        "ROLL_PLUS_MINUS", "ROLL_WIN_RATE", "REST_DAYS"
+        "ROLL_PLUS_MINUS", "ROLL_WIN_RATE",
+        "ROLL_OFF_RATING", "ROLL_DEF_RATING", "ROLL_PACE",
+        "ROLL_TS_PCT", "ROLL_EFG_PCT", "ROLL_OREB_PCT",
+        "ROLL_DREB_PCT", "ROLL_TM_TOV_PCT", "REST_DAYS"
     ]
 
     home_stats = {k: home_row[f"{home_prefix}_{k}"] for k in stat_keys}

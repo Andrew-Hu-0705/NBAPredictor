@@ -25,9 +25,20 @@ OUTPUT_FEATURES = "features.csv"
 
 # ── Fetch raw game logs ───────────────────────────────────────────────────────
 def fetch_game_logs(season: str) -> pd.DataFrame:
-    print(f"Fetching game logs for {season}...")
+    print(f"Fetching basic game logs for {season}...")
     log = leaguegamelog.LeagueGameLog(season=season, season_type_all_star="Regular Season")
-    df = log.get_data_frames()[0]
+    df_base = log.get_data_frames()[0]
+
+    print(f"Fetching advanced game logs for {season}...")
+    # Sleep to be kind to the API
+    time.sleep(1)
+    adv_log = teamgamelogs.TeamGameLogs(season_nullable=season, measure_type_player_game_logs_nullable="Advanced")
+    df_adv = adv_log.get_data_frames()[0]
+
+    # Merge on GAME_ID and TEAM_ID
+    cols_to_use = df_adv.columns.difference(df_base.columns).tolist() + ["GAME_ID", "TEAM_ID"]
+    df = pd.merge(df_base, df_adv[cols_to_use], on=["GAME_ID", "TEAM_ID"], how="left")
+
     df.to_csv(OUTPUT_RAW, index=False)
     print(f"  Saved {len(df)} rows to {OUTPUT_RAW}")
     return df
@@ -51,7 +62,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["REST_DAYS"] = (df["GAME_DATE"] - df["PREV_DATE"]).dt.days.fillna(3)
 
     # Rolling averages for key stats (computed BEFORE the current game to avoid leakage)
-    stat_cols = ["PTS", "REB", "AST", "TOV", "FG_PCT", "FG3_PCT", "FT_PCT", "PLUS_MINUS"]
+    stat_cols = [
+        "PTS", "REB", "AST", "TOV", "FG_PCT", "FG3_PCT", "FT_PCT", "PLUS_MINUS",
+        "OFF_RATING", "DEF_RATING", "PACE", "TS_PCT", "EFG_PCT", "OREB_PCT", "DREB_PCT", "TM_TOV_PCT"
+    ]
     for col in stat_cols:
         df[f"ROLL_{col}"] = (
             df.groupby("TEAM_ID")[col]

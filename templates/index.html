@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NBA Game Predictor</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="background">
+        <div class="glow-orb orb-1"></div>
+        <div class="glow-orb orb-2"></div>
+    </div>
+
+    <div class="container">
+        <header>
+            <h1>🏀 NBA Game Predictor</h1>
+            <p>XGBoost + SHAP · Trained on current season rolling stats</p>
+        </header>
+
+        <main class="glass-panel">
+            <form id="prediction-form">
+                <div class="team-selection">
+                    <div class="team-group">
+                        <label for="home-team">🏠 Home Team</label>
+                        <select id="home-team" name="home_team">
+                            {% for team in teams %}
+                                <option value="{{ team }}" {% if team == 'BOS' %}selected{% endif %}>{{ team }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    
+                    <div class="vs-badge">VS</div>
+
+                    <div class="team-group">
+                        <label for="away-team">✈️ Away Team</label>
+                        <select id="away-team" name="away_team">
+                            {% for team in teams %}
+                                <option value="{{ team }}" {% if team == 'MIA' %}selected{% endif %}>{{ team }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div id="error-message" class="error-message hidden"></div>
+                
+                <button type="submit" id="predict-btn">
+                    <span class="btn-text">Predict Outcome</span>
+                    <div class="spinner hidden"></div>
+                </button>
+            </form>
+        </main>
+
+        <section id="results-section" class="glass-panel hidden results-section">
+            <div class="winner-banner" id="winner-banner">
+                <!-- Injected via JS -->
+            </div>
+            
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-title" id="home-prob-title">Home Win Prob</div>
+                    <div class="metric-value" id="home-prob-value">--</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-title" id="away-prob-title">Away Win Prob</div>
+                    <div class="metric-value" id="away-prob-value">--</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-title">Model Confidence</div>
+                    <div class="metric-value" id="confidence-value">--</div>
+                </div>
+            </div>
+
+            <div class="shap-container">
+                <h3>Why this prediction?</h3>
+                <p class="caption">Positive values push toward a <strong style="color:var(--accent-home)">home win</strong>. Negative values push toward an <strong style="color:var(--accent-away)">away win</strong>.</p>
+                <div class="chart-wrapper">
+                    <canvas id="shapChart"></canvas>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
