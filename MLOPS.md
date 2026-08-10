@@ -155,3 +155,42 @@ production for this project's scale.
 no traffic; the next request pays a ~30-60s cold-start penalty. This matters
 for Stage 6's latency numbers — they'll be reported both cold and warm,
 since only warm numbers are representative of sustained load.
+
+### Incident: cross-Python-version pickle failure on first deploy
+
+The first real deploy came up "live" but degraded — `/health` returned
+`model_loaded: false`. The structured logging built in Stage 1 pointed
+straight at it: `"error": "code() argument 13 must be str, not int"`.
+
+Root cause: `shap.TreeExplainer` (shap 0.44.1) embeds a numba-JIT-compiled
+closure in its pickled state (`shap_explainer.joblib`). numba serializes
+that closure's Python code object directly, and `types.CodeType`'s
+constructor signature changed between Python 3.8 (used to train/pickle the
+original artifacts) and 3.11 (what the Docker image runs) — reconstructing
+the code object on unpickle threw. `nba_model.joblib` alone loaded fine
+under 3.11; the explainer was the only affected artifact, confirmed by
+loading each file in isolation with a full traceback.
+
+Fix: retrained under Python 3.11 (matching the serving image exactly) and
+re-pickled both artifacts. This also required rebuilding the local dev
+`venv/` from Python 3.8.8 to 3.11 — pickle compatibility isn't guaranteed in
+either direction across Python minor versions, so training and serving now
+have to use the same one. `numba`/`llvmlite` are pinned explicitly in
+`requirements.txt`/`requirements-api.txt` for the same reason: shap's own
+dependency spec doesn't pin them, and letting pip pick "latest compatible"
+independently for training vs. serving reopens the exact same failure mode.
+
+A second gotcha surfaced while fixing the first: pip's resolver silently
+upgrades already-installed packages to satisfy a new package's dependency
+range if they aren't re-pinned in that same install command (e.g.
+`pip install mlflow` alone quietly bumped `pandas` past its pin). All
+pickle-sensitive packages (`numpy`, `pandas`, `scikit-learn`, `xgboost`,
+`shap`, `numba`, `llvmlite`, `joblib`) now need to be installed together in
+one command — installing them piecemeal across separate commands can drift
+versions apart without any visible error until something tries to unpickle
+across the mismatch.
+
+Verified the fix with the exact `requirements-api.txt` pin set, isolated
+from every other dependency, in a clean Python 3.11 venv: both artifacts
+load, `/health` reports `model_loaded: true`, and `/predict` returns the
+correct response including the full SHAP breakdown.

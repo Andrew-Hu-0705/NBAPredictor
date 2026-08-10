@@ -4,10 +4,24 @@
 # Pinned (not >=) to match the exact versions the checked-in model/explainer
 # .joblib artifacts were trained and pickled with — a newer sklearn/xgboost
 # can silently change prediction behavior or fail to unpickle.
+#
+# numba/llvmlite are pinned explicitly, not left to shap's own dependency
+# resolution: shap's TreeExplainer embeds a numba-JIT-compiled closure in its
+# pickled state, and that closure's serialized bytecode is NOT portable
+# across Python minor versions (confirmed the hard way — training under
+# Python 3.8 and serving under 3.11 raised "code() argument 13 must be str,
+# not int" unpickling shap_explainer.joblib). Artifacts must be trained under
+# the same Python minor version this image serves with (3.11), and every
+# package below must be installed together in one command/one lockstep set —
+# pip's resolver will silently upgrade numpy/pandas/sklearn to satisfy a
+# looser transitive constraint (e.g. from mlflow or numba) if they're
+# installed incrementally across separate commands, breaking these pins.
+numpy==1.26.4
 pandas==2.0.3
-numpy==1.24.4
 xgboost==2.1.4
 scikit-learn==1.3.2
+numba==0.61.0
+llvmlite==0.44.0
 shap==0.44.1
 joblib==1.4.2
 fastapi==0.124.4
