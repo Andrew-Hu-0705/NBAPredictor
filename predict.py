@@ -41,9 +41,14 @@ def get_latest_team_stats(df: pd.DataFrame, team_abbr: str, side: str) -> dict:
         raise ValueError(f"Team '{team_abbr}' not found in features data as {side}.")
     return team_rows.iloc[-1]
 
+# ── Load features table ───────────────────────────────────────────────────────
+def load_features() -> pd.DataFrame:
+    return pd.read_csv(FEATURES_PATH, parse_dates=["GAME_DATE"])
+
 # ── Build feature vector ───────────────────────────────────────────────────────
-def build_feature_vector(home_team: str, away_team: str, feature_cols: list) -> pd.DataFrame:
-    df = pd.read_csv(FEATURES_PATH, parse_dates=["GAME_DATE"])
+def build_feature_vector(home_team: str, away_team: str, feature_cols: list, df: pd.DataFrame = None) -> pd.DataFrame:
+    if df is None:
+        df = load_features()
 
     # Get most recent stats for each team regardless of home/away role
     # We take the last game they appeared in (either side) for rolling stats
@@ -98,16 +103,28 @@ def build_feature_vector(home_team: str, away_team: str, feature_cols: list) -> 
     return pd.DataFrame([vec])[feature_cols]
 
 # ── Main prediction function ───────────────────────────────────────────────────
-def predict_game(home_team: str, away_team: str) -> dict:
+def predict_game(
+    home_team: str,
+    away_team: str,
+    model=None,
+    explainer=None,
+    feature_cols: list = None,
+    features_df: pd.DataFrame = None,
+) -> dict:
     """
     Returns a dict with:
         home_team, away_team,
         home_win_prob, away_win_prob,
         predicted_winner,
         shap_values (array), feature_cols (list)
+
+    Pass model/explainer/feature_cols (e.g. loaded once at API startup) to skip
+    re-reading the artifacts from disk on every call. Omit them to load fresh,
+    as the CLI usage below does.
     """
-    model, explainer, feature_cols = load_artifacts()
-    X = build_feature_vector(home_team, away_team, feature_cols)
+    if model is None or explainer is None or feature_cols is None:
+        model, explainer, feature_cols = load_artifacts()
+    X = build_feature_vector(home_team, away_team, feature_cols, df=features_df)
 
     home_win_prob = float(model.predict_proba(X)[0][1])
     away_win_prob = 1.0 - home_win_prob

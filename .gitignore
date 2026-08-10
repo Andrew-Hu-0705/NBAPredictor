@@ -1,6 +1,18 @@
 venv/
 __pycache__/
-*.csv
-*.joblib
-*.png
 .DS_Store
+.claude/
+.pytest_cache/
+tmp/
+mlruns/
+mlflow-data/
+feature_importance.json
+
+# Raw intermediate data (regenerate with fetch_data.py) — not needed to serve
+# predictions, so not committed. features.csv, the trained model, and the
+# SHAP explainer ARE committed: they're the actual deployable artifacts the
+# API and Docker build need, and CI needs something deterministic to test
+# and build against without hitting the live NBA API on every push.
+games_raw.csv
+player_logs_raw.csv
+*.png

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # requirements-api.txt + requirements-dev.txt is exactly what the API
+      # needs at runtime plus a test runner — the same dependency set the
+      # Docker image ships, so a green test run here means something about
+      # the actual serving environment, not just the dev machine's.
+      - run: pip install -r requirements-api.txt -r requirements-dev.txt
+
+      - run: pytest -v
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t nba-predictor-api:ci .
+
+      # Docker Desktop isn't available in local dev for this project, so this
+      # is the first point in the pipeline that actually runs the built
+      # container — real startup, real /health and /predict calls, not just
+      # "the Dockerfile has the right COPY lines".
+      - name: Smoke test the built image
+        run: |
+          docker run -d --name api -p 8000:8000 nba-predictor-api:ci
+
+          ok=""
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:8000/health > health.json; then ok=1; break; fi
+            sleep 3
+          done
+          docker logs api
+          if [ -z "$ok" ]; then echo "container never became healthy"; exit 1; fi
+          cat health.json
+          grep -q '"status":"ok"' health.json
+
+          curl -sf -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"home_team":"BOS","away_team":"MIA"}' > predict.json
+          cat predict.json
+          grep -q 'predicted_winner' predict.json
+
+          docker stop api
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push
+        run: |
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          docker tag nba-predictor-api:ci "$IMAGE:latest"
+          docker tag nba-predictor-api:ci "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"

@@ -1,15 +1,9 @@
 import os
 from flask import Flask, render_template, request, jsonify
 from predict import predict_game
+from teams import NBA_TEAMS
 
 app = Flask(__name__)
-
-# ── Team list ──────────────────────────────────────────────────────────────────
-NBA_TEAMS = [
-    "ATL", "BOS", "BKN", "CHA", "CHI", "CLE", "DAL", "DEN", "DET", "GSW",
-    "HOU", "IND", "LAC", "LAL", "MEM", "MIA", "MIL", "MIN", "NOP", "NYK",
-    "OKC", "ORL", "PHI", "PHX", "POR", "SAC", "SAS", "TOR", "UTA", "WAS",
-]
 
 @app.route("/")
 def index():

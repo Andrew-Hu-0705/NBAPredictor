@@ -1,0 +1,17 @@
+# Minimal, pinned dependency set for the FastAPI serving image only.
+# Excludes nba_api / matplotlib / Flask, which are only needed for data
+# fetching, training-time SHAP plots, and the legacy Flask UI respectively.
+# Pinned (not >=) to match the exact versions the checked-in model/explainer
+# .joblib artifacts were trained and pickled with — a newer sklearn/xgboost
+# can silently change prediction behavior or fail to unpickle.
+pandas==2.0.3
+numpy==1.24.4
+xgboost==2.1.4
+scikit-learn==1.3.2
+shap==0.44.1
+joblib==1.4.2
+fastapi==0.124.4
+uvicorn[standard]==0.33.0
+# Client-only MLflow (no server/UI deps) — just enough to read the model
+# registry ("production" alias) and download run artifacts at startup.
+mlflow-skinny==2.17.2

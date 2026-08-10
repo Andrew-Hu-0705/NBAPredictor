@@ -15,11 +15,16 @@ Output:
     model/feature_cols.txt      — ordered list of features used
 """
 
+import json
+import os
+
 import joblib
 import numpy as np
 import pandas as pd
 import shap
 import matplotlib.pyplot as plt
+import mlflow
+import mlflow.sklearn
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
@@ -35,6 +40,10 @@ MODEL_OUT = "nba_model.joblib"
 EXPLAINER_OUT = "shap_explainer.joblib"
 FEATURE_COLS_OUT = "feature_cols.txt"
 SHAP_PLOT_OUT = "shap_summary.png"
+FEATURE_IMPORTANCE_OUT = "feature_importance.json"
+
+MLFLOW_EXPERIMENT = "nba-game-predictor"
+REGISTERED_MODEL_NAME = "nba-predictor"
 
 # Features fed to the model (differentials + raw rolling stats).
 # A number of the original candidate features were dropped for being
@@ -213,7 +222,33 @@ def train(df: pd.DataFrame):
     print("\nFull-data classification report (in-sample, for reference):")
     print(classification_report(y, preds_all, target_names=["Away Win", "Home Win"]))
 
-    return production_model, final_model
+    if use_calibration and calib_choice == "sigmoid":
+        prod_accs, prod_aucs = sig_accs, sig_aucs
+    elif use_calibration:
+        prod_accs, prod_aucs = iso_accs, iso_aucs
+    else:
+        prod_accs, prod_aucs = xgb_accs, xgb_aucs
+
+    metrics = {
+        "n_games": float(n),
+        "cv_xgb_accuracy_mean": float(np.mean(xgb_accs)), "cv_xgb_accuracy_std": float(np.std(xgb_accs)),
+        "cv_xgb_auc_mean": float(np.mean(xgb_aucs)), "cv_xgb_auc_std": float(np.std(xgb_aucs)),
+        "cv_xgb_logloss_mean": float(np.mean(xgb_loglosses)),
+        "cv_xgb_brier_mean": float(np.mean(xgb_briers)),
+        "cv_sigmoid_accuracy_mean": float(np.mean(sig_accs)), "cv_sigmoid_auc_mean": float(np.mean(sig_aucs)),
+        "cv_sigmoid_logloss_mean": float(np.mean(sig_loglosses)),
+        "cv_isotonic_accuracy_mean": float(np.mean(iso_accs)), "cv_isotonic_auc_mean": float(np.mean(iso_aucs)),
+        "cv_isotonic_logloss_mean": float(np.mean(iso_loglosses)),
+        "cv_logreg_accuracy_mean": float(np.mean(lr_accs)), "cv_logreg_auc_mean": float(np.mean(lr_aucs)),
+        "cv_logreg_logloss_mean": float(np.mean(lr_loglosses)),
+        "cv_ensemble_accuracy_mean": float(np.mean(ens_accs)), "cv_ensemble_auc_mean": float(np.mean(ens_aucs)),
+        "cv_ensemble_logloss_mean": float(np.mean(ens_loglosses)),
+        "production_cv_accuracy_mean": float(np.mean(prod_accs)),
+        "production_cv_auc_mean": float(np.mean(prod_aucs)),
+        "final_best_iteration": float(final_model.best_iteration),
+    }
+
+    return production_model, final_model, metrics, (calib_choice if use_calibration else "none")
 
 # ── SHAP ───────────────────────────────────────────────────────────────────────
 def compute_shap(model, X: np.ndarray, feature_names: list):
@@ -247,12 +282,45 @@ def save_artifacts(model, explainer):
 
 
 if __name__ == "__main__":
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns"))
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+
     df = load_data()
-    production_model, raw_xgb_model = train(df)
-    # SHAP needs the raw XGBoost model — a CalibratedClassifierCV wrapper isn't a
-    # tree model TreeExplainer can read. Calibration is a monotonic post-hoc
-    # remapping of probabilities, so the raw model's SHAP attributions still
-    # correctly explain what's driving the (pre-calibration) prediction.
-    explainer = compute_shap(raw_xgb_model, df[FEATURE_COLS].values, FEATURE_COLS)
-    save_artifacts(production_model, explainer)
-    print("\nDone! Run app/app.py to launch the Streamlit UI.")
+    with mlflow.start_run() as run:
+        production_model, raw_xgb_model, metrics, calib_choice = train(df)
+        # SHAP needs the raw XGBoost model — a CalibratedClassifierCV wrapper isn't a
+        # tree model TreeExplainer can read. Calibration is a monotonic post-hoc
+        # remapping of probabilities, so the raw model's SHAP attributions still
+        # correctly explain what's driving the (pre-calibration) prediction.
+        explainer = compute_shap(raw_xgb_model, df[FEATURE_COLS].values, FEATURE_COLS)
+        save_artifacts(production_model, explainer)
+
+        feature_importance = dict(sorted(
+            zip(FEATURE_COLS, (float(v) for v in raw_xgb_model.feature_importances_)),
+            key=lambda kv: kv[1], reverse=True,
+        ))
+        with open(FEATURE_IMPORTANCE_OUT, "w") as f:
+            json.dump(feature_importance, f, indent=2)
+
+        mlflow.log_params({
+            **XGB_PARAMS,
+            "calib_frac": CALIB_FRAC,
+            "min_calib": MIN_CALIB,
+            "n_features": len(FEATURE_COLS),
+            "calibration_applied": calib_choice,
+        })
+        mlflow.log_metrics(metrics)
+        mlflow.log_artifact(SHAP_PLOT_OUT)
+        mlflow.log_artifact(FEATURE_IMPORTANCE_OUT)
+        mlflow.log_artifact(EXPLAINER_OUT, artifact_path="explainer")
+        mlflow.log_artifact(FEATURE_COLS_OUT)
+        mlflow.sklearn.log_model(
+            production_model, artifact_path="model", registered_model_name=REGISTERED_MODEL_NAME,
+        )
+
+        print(f"\nMLflow run '{run.info.run_id}' logged under experiment '{MLFLOW_EXPERIMENT}'.")
+        print(f"Registered as a new version of '{REGISTERED_MODEL_NAME}' in the model registry.")
+        print("This version is NOT automatically served — promote it explicitly with:")
+        print(f"  python promote_model.py <version>")
+
+    print("\nDone! Run 'python app.py' for the Flask UI or 'uvicorn api.main:app' for the FastAPI service.")

@@ -1,0 +1,24 @@
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.git/
+.gitignore
+.claude/
+.DS_Store
+tmp/
+
+# Training-only artifacts and raw data — not needed to serve predictions
+games_raw.csv
+player_logs_raw.csv
+shap_summary.png
+train.py
+fetch_data.py
+
+# Legacy Flask UI — not part of the API image
+app.py
+static/
+templates/
+
+README.md
+mlruns/
