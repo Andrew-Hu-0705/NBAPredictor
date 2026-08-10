@@ -20,13 +20,16 @@ An ML-powered NBA game predictor built with XGBoost and SHAP explainability. Pre
 
 ## Results
 
-| Metric | Score |
-|---|---|
-| CV Accuracy (5-fold TimeSeriesSplit) | ~64% |
-| CV AUC | ~0.69 |
-| Baseline (always pick home team) | ~58% |
+Measured on 3 seasons of data (2022-23 through 2024-25, ~3,640 games) with 5-fold `TimeSeriesSplit` CV:
 
-> NBA games are inherently hard to predict — Vegas sits around 67–70% on heavy favorites. A 64% CV accuracy meaningfully beats the home-team baseline.
+| Metric | XGBoost | Logistic Regression | Ensemble (avg of both) |
+|---|---|---|---|
+| CV Accuracy | ~64.6% ± 3.2% | ~65.2% ± 3.3% | ~65.3% ± 3.5% |
+| CV AUC | ~0.69 ± 0.04 | ~0.71 ± 0.04 | ~0.71 ± 0.04 |
+| CV Log Loss | ~0.63 | ~0.62 | ~0.62 |
+| Baseline (always pick home team) | ~55.7% | — | — |
+
+> NBA games are inherently hard to predict — Vegas sits around 67–70% on heavy favorites. XGBoost is regularized (depth/estimator limits, L1/L2, early stopping) and clears the home-team baseline by ~9 points. Logistic regression and a simple probability-averaging ensemble are run through the same CV folds as comparison points; the ensemble's gain over solo XGBoost was small enough (<1 point) that it isn't worth the extra serving complexity, so **XGBoost remains the production model**. The single biggest lever was adding Elo ratings (`DIFF_ELO`) as a feature — it alone accounted for most of the jump from ~61% to ~65% CV accuracy over the previous rolling-stats-only feature set. Re-run `python train.py` to reproduce these numbers.
 
 ---
 
@@ -77,13 +80,17 @@ streamlit run app/app.py
 ## How It Works
 
 ### Data
-Game logs are fetched via `nba_api` for the current season. Each team's last N games (default: 5) are used to compute rolling averages for points, rebounds, assists, turnovers, shooting percentages, plus/minus, and win rate. Rest days between games are also included.
+Game logs are fetched via `nba_api` for one or more seasons (configured as `SEASONS` in `fetch_data.py`, default: 2022-23 through 2024-25). Each team's last N games (default: 10, tuned via CV — see below) are used to compute rolling averages for points, rebounds, assists, turnovers, shooting percentages, plus/minus, and win rate. Rest days between games are also included. Rolling stats and rest days are computed per-season so form doesn't carry over across an off-season.
 
 ### Features
-Rather than using raw stats, the model is fed **differential features** (home team stat minus away team stat), which are more predictive than raw values and reduce dimensionality. Rolling stats are always computed from games *prior* to the current one to prevent data leakage.
+Rather than using raw stats, the model is fed **differential features** (home team stat minus away team stat), which are more predictive than raw values and reduce dimensionality. Rolling stats are always computed from games *prior* to the current one to prevent data leakage. A handful of candidate features (e.g. raw points, raw turnovers, FG%, EFG%) were dropped from the final feature set for being highly redundant (>0.75 correlation) with another feature already kept — see the comment above `FEATURE_COLS` in `train.py` for the full list and reasoning.
+
+**Elo ratings** (`DIFF_ELO`) are the strongest feature in the model by a wide margin. `compute_elo()` in `fetch_data.py` maintains a running per-team rating updated after every game (margin-of-victory-weighted, home-court adjusted, partially reverting to the mean between seasons), and the pre-game rating differential is fed to the model — pre-game, so it can't leak the outcome it's predicting.
+
+The rolling window size (5 vs. 10 vs. 20 games, etc.) was swept via the same CV setup and turned out to barely matter once Elo was added (accuracy varied by about 1 point across window sizes 3–20) — 10 was picked as a reasonable middle value, not because it was a clear CV winner.
 
 ### Model
-XGBoost was chosen for its performance on tabular data, native feature importance, and compatibility with SHAP. Time-series cross-validation is used during evaluation to ensure no future games leak into training folds.
+XGBoost was chosen for its performance on tabular data, native feature importance, and compatibility with SHAP. Time-series cross-validation is used during evaluation to ensure no future games leak into training folds. The model is regularized (shallow trees, L1/L2 penalties, `min_child_weight`) and uses early stopping per CV fold to keep it from overfitting the training set — a plain logistic regression, and a simple probability-averaging ensemble of the two, are run through the same folds as comparison points on every training run (see [Results](#results)).
 
 ### Explainability
 SHAP (SHapley Additive exPlanations) TreeExplainer is used to produce per-prediction breakdowns. For every matchup, you can see exactly which features pushed the model toward a home win or away win — e.g., "the home team's 4-day rest advantage was the biggest factor."
@@ -106,10 +113,9 @@ SHAP (SHapley Additive exPlanations) TreeExplainer is used to produce per-predic
 
 ## Ideas for Extension
 
-- Add Elo ratings as a feature
-- Pull injury reports and factor out key players
+- Pull injury reports and factor out key players (rolling stats and Elo can't see who's out tonight — likely the next-biggest accuracy lever)
 - Predict point spread instead of win/loss
-- Add historical seasons for a larger training set
+- Add more historical seasons for a larger training set
 - Deploy to Streamlit Cloud
 
 ---
