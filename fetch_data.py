@@ -13,8 +13,9 @@ Output:
 """
 
 import time
+import numpy as np
 import pandas as pd
-from nba_api.stats.endpoints import leaguegamelog, teamgamelogs
+from nba_api.stats.endpoints import leaguegamelog, teamgamelogs, playergamelogs
 from nba_api.stats.static import teams
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -24,7 +25,17 @@ from nba_api.stats.static import teams
 SEASONS = ["2022-23", "2023-24", "2024-25"]
 ROLLING_WINDOW = 10         # rolling average over last N games — tuned via CV, see train.py notes
 OUTPUT_RAW = "games_raw.csv"
+OUTPUT_PLAYER_RAW = "player_logs_raw.csv"
 OUTPUT_FEATURES = "features.csv"
+
+# "Missing rotation minutes" config. nba_api doesn't expose a live/historical
+# injury report, so this is inferred from who actually suited up: a player
+# counts as part of a team's rotation if they appeared in at least
+# ROTATION_MIN_APPEARANCES of the team's last ROTATION_LOOKBACK_GAMES games,
+# capped at the ROTATION_SIZE players with the most minutes.
+ROTATION_LOOKBACK_GAMES = 5
+ROTATION_MIN_APPEARANCES = 3
+ROTATION_SIZE = 8
 
 # Elo config. K and home-court advantage follow the values FiveThirtyEight
 # published for their NBA Elo model. SEASON_CARRYOVER controls how much of a
@@ -63,6 +74,25 @@ def fetch_game_logs(seasons: list) -> pd.DataFrame:
 
     df.to_csv(OUTPUT_RAW, index=False)
     print(f"  Saved {len(df)} rows across {len(seasons)} season(s) to {OUTPUT_RAW}")
+    return df
+
+def fetch_player_logs(seasons: list) -> pd.DataFrame:
+    """Player-level game logs (who actually played, and how many minutes),
+    used to infer which of a team's rotation players are missing tonight."""
+    dfs = []
+    for i, season in enumerate(seasons):
+        print(f"Fetching player game logs for {season}...")
+        log = playergamelogs.PlayerGameLogs(season_nullable=season, season_type_nullable="Regular Season")
+        d = log.get_data_frames()[0]
+        d["SEASON"] = season
+        dfs.append(d)
+        if i < len(seasons) - 1:
+            time.sleep(1)  # be kind to the API between seasons
+    df = pd.concat(dfs, ignore_index=True)
+    df = df[["PLAYER_ID", "PLAYER_NAME", "TEAM_ID", "GAME_ID", "GAME_DATE", "SEASON", "MIN"]]
+
+    df.to_csv(OUTPUT_PLAYER_RAW, index=False)
+    print(f"  Saved {len(df)} player-game rows across {len(seasons)} season(s) to {OUTPUT_PLAYER_RAW}")
     return df
 
 # ── Elo ratings ────────────────────────────────────────────────────────────────
@@ -107,8 +137,45 @@ def compute_elo(games: pd.DataFrame) -> pd.DataFrame:
     games["DIFF_ELO"] = games["HOME_ELO_PRE"] - games["AWAY_ELO_PRE"]
     return games
 
+# ── Missing rotation minutes ─────────────────────────────────────────────────
+def compute_missing_rotation_minutes(team_games: pd.DataFrame, player_logs: pd.DataFrame) -> pd.Series:
+    """
+    For each row in team_games (one row per team per game), estimates how many
+    minutes of that team's recent rotation are absent from tonight's box score —
+    a proxy for "key players out" (injury, rest, trade) that neither the rolling
+    box-score stats nor Elo can see, since those only reflect performance from
+    games the team's *actual* lineup played. Uses only games strictly before the
+    one being scored, so it can't leak tonight's box score.
+    """
+    game_players = (
+        player_logs.groupby(["TEAM_ID", "GAME_ID"])
+        .apply(lambda g: dict(zip(g["PLAYER_ID"], g["MIN"])))
+        .to_dict()
+    )
+
+    missing_minutes = {}
+    for (team_id, season), team_rows in team_games.groupby(["TEAM_ID", "SEASON"]):
+        recent_game_ids = []  # sliding window of this team's own past games, this season
+        for idx, row in team_rows.sort_values("GAME_DATE").iterrows():
+            appearances = {}
+            for gid in recent_game_ids[-ROTATION_LOOKBACK_GAMES:]:
+                for pid, mins in game_players.get((team_id, gid), {}).items():
+                    appearances.setdefault(pid, []).append(mins)
+            rotation = {
+                pid: np.mean(mins_list) for pid, mins_list in appearances.items()
+                if len(mins_list) >= ROTATION_MIN_APPEARANCES
+            }
+            rotation = dict(sorted(rotation.items(), key=lambda kv: -kv[1])[:ROTATION_SIZE])
+
+            present = game_players.get((team_id, row["GAME_ID"]), {})
+            missing_minutes[idx] = sum(avg_min for pid, avg_min in rotation.items() if pid not in present)
+
+            recent_game_ids.append(row["GAME_ID"])
+
+    return pd.Series(missing_minutes).reindex(team_games.index).fillna(0.0)
+
 # ── Feature engineering ───────────────────────────────────────────────────────
-def build_features(df: pd.DataFrame, window: int = ROLLING_WINDOW, save: bool = True) -> pd.DataFrame:
+def build_features(df: pd.DataFrame, player_logs: pd.DataFrame, window: int = ROLLING_WINDOW, save: bool = True) -> pd.DataFrame:
     print(f"Engineering features (rolling window={window})...")
 
     df = df.copy()
@@ -145,12 +212,41 @@ def build_features(df: pd.DataFrame, window: int = ROLLING_WINDOW, save: bool = 
         .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
     )
 
+    # Strength-of-schedule adjustment for OFF/DEF rating. Raw OFF_RATING/DEF_RATING
+    # don't account for opponent quality — scoring well against a bad defense looks
+    # the same as scoring well against a great one. Adjust each game's rating by how
+    # far the opponent's own pre-game rolling rating deviates from the league
+    # average, then roll THAT. Uses only the opponent's rolling stats from strictly
+    # before this game (same leak-free shift(1) pattern as everything else here).
+    opp_ratings = df[["GAME_ID", "TEAM_ID", "ROLL_OFF_RATING", "ROLL_DEF_RATING"]].rename(columns={
+        "TEAM_ID": "OPP_TEAM_ID", "ROLL_OFF_RATING": "OPP_ROLL_OFF_RATING", "ROLL_DEF_RATING": "OPP_ROLL_DEF_RATING"
+    })
+    df = df.merge(opp_ratings, on="GAME_ID")
+    df = df[df["TEAM_ID"] != df["OPP_TEAM_ID"]].reset_index(drop=True)
+
+    league_avg_off = df["OFF_RATING"].mean()
+    league_avg_def = df["DEF_RATING"].mean()
+    df["OFF_RATING_ADJ"] = df["OFF_RATING"] - (df["OPP_ROLL_DEF_RATING"] - league_avg_def)
+    df["DEF_RATING_ADJ"] = df["DEF_RATING"] - (df["OPP_ROLL_OFF_RATING"] - league_avg_off)
+
+    for col in ["OFF_RATING_ADJ", "DEF_RATING_ADJ"]:
+        df[f"ROLL_{col}"] = (
+            df.groupby(["TEAM_ID", "SEASON"])[col]
+            .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        )
+
+    # Missing rotation minutes — see compute_missing_rotation_minutes docstring
+    df["MISSING_ROTATION_MIN"] = compute_missing_rotation_minutes(df, player_logs)
+
     # ── Pair home and away teams per game ────────────────────────────────────
     # Each GAME_ID appears twice (once per team). We merge them into one row.
     home = df[df["HOME"] == 1].copy()
     away = df[df["HOME"] == 0].copy()
 
-    roll_feature_cols = [f"ROLL_{c}" for c in stat_cols] + ["ROLL_WIN_RATE", "REST_DAYS"]
+    roll_feature_cols = (
+        [f"ROLL_{c}" for c in stat_cols]
+        + ["ROLL_WIN_RATE", "REST_DAYS", "MISSING_ROTATION_MIN", "ROLL_OFF_RATING_ADJ", "ROLL_DEF_RATING_ADJ"]
+    )
     # PLUS_MINUS (this game's actual point margin, not rolled) is carried through
     # only for the home side — needed to compute Elo's margin-of-victory multiplier.
     meta_cols = ["GAME_ID", "GAME_DATE", "SEASON", "TEAM_ID", "TEAM_ABBREVIATION", "WIN"] + roll_feature_cols
@@ -188,7 +284,8 @@ def build_features(df: pd.DataFrame, window: int = ROLLING_WINDOW, save: bool = 
 
 if __name__ == "__main__":
     raw = fetch_game_logs(SEASONS)
-    features = build_features(raw)
+    player_logs = fetch_player_logs(SEASONS)
+    features = build_features(raw, player_logs)
     print("\nFeature columns:")
     print([c for c in features.columns if c.startswith(("DIFF_", "HOME_ROLL", "AWAY_ROLL"))])
     print("\nDone! Run model/train.py next.")

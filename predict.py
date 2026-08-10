@@ -77,7 +77,8 @@ def build_feature_vector(home_team: str, away_team: str, feature_cols: list) -> 
         "ROLL_PLUS_MINUS", "ROLL_WIN_RATE",
         "ROLL_OFF_RATING", "ROLL_DEF_RATING", "ROLL_PACE",
         "ROLL_TS_PCT", "ROLL_EFG_PCT", "ROLL_OREB_PCT",
-        "ROLL_DREB_PCT", "ROLL_TM_TOV_PCT", "REST_DAYS", "ELO_PRE"
+        "ROLL_DREB_PCT", "ROLL_TM_TOV_PCT", "REST_DAYS", "ELO_PRE", "MISSING_ROTATION_MIN",
+        "ROLL_OFF_RATING_ADJ", "ROLL_DEF_RATING_ADJ",
     ]
 
     home_stats = {k: home_row[f"{home_prefix}_{k}"] for k in stat_keys}
@@ -91,6 +92,8 @@ def build_feature_vector(home_team: str, away_team: str, feature_cols: list) -> 
     vec["HOME_REST_DAYS"] = home_stats["REST_DAYS"]
     vec["AWAY_REST_DAYS"] = away_stats["REST_DAYS"]
     vec["DIFF_ELO"] = vec.pop("DIFF_ELO_PRE")  # rename to match FEATURE_COLS in train.py
+    vec["HOME_MISSING_ROTATION_MIN"] = home_stats["MISSING_ROTATION_MIN"]
+    vec["AWAY_MISSING_ROTATION_MIN"] = away_stats["MISSING_ROTATION_MIN"]
 
     return pd.DataFrame([vec])[feature_cols]
 
