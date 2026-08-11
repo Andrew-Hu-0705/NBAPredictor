@@ -29,3 +29,4 @@ uvicorn[standard]==0.33.0
 # Client-only MLflow (no server/UI deps) — just enough to read the model
 # registry ("production" alias) and download run artifacts at startup.
 mlflow-skinny==2.17.2
+prometheus-fastapi-instrumentator==7.1.0

@@ -1,0 +1,72 @@
+{
+  "title": "NBA Predictor API",
+  "uid": "nba-predictor-api",
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Requests/sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[1m])) by (handler)",
+          "legendFormat": "{{handler}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Error rate (non-2xx / total)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status!~\"2..\"}[1m])) / sum(rate(http_requests_total[1m]))",
+          "legendFormat": "error rate"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Latency percentiles (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_highr_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_highr_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_highr_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Total requests by status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(http_requests_total) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39
+}

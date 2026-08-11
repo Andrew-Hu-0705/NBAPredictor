@@ -22,7 +22,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
 COPY api/ ./api/
 COPY predict.py teams.py ./
-COPY nba_model.joblib shap_explainer.joblib feature_cols.txt features.csv ./
+COPY nba_model.joblib shap_explainer.joblib feature_cols.txt features.csv drift_reference.json ./
 
 USER appuser
 EXPOSE 8000

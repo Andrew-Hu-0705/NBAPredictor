@@ -41,6 +41,8 @@ EXPLAINER_OUT = "shap_explainer.joblib"
 FEATURE_COLS_OUT = "feature_cols.txt"
 SHAP_PLOT_OUT = "shap_summary.png"
 FEATURE_IMPORTANCE_OUT = "feature_importance.json"
+DRIFT_REFERENCE_OUT = "drift_reference.json"
+DRIFT_N_BINS = 10
 
 MLFLOW_EXPERIMENT = "nba-game-predictor"
 REGISTERED_MODEL_NAME = "nba-predictor"
@@ -270,6 +272,33 @@ def compute_shap(model, X: np.ndarray, feature_names: list):
 
     return explainer
 
+# ── Data drift reference ────────────────────────────────────────────────────────
+def compute_drift_reference(df: pd.DataFrame, feature_cols: list, n_bins: int = DRIFT_N_BINS) -> dict:
+    """Per-feature histogram of the training distribution, for comparing
+    incoming production requests against at serving time (see api/drift.py).
+    Bin edges are quantiles of the training data itself, so each bin holds
+    ~1/n_bins of the reference mass by construction."""
+    bins, reference_proportions = {}, {}
+    for col in feature_cols:
+        values = df[col].values.astype(float)
+        edges = np.unique(np.quantile(values, np.linspace(0, 1, n_bins + 1)))
+        if len(edges) < 3:
+            # Degenerate/near-constant feature — not enough distinct quantiles
+            # for a meaningful histogram; skip it rather than divide by zero.
+            continue
+        edges[0], edges[-1] = -np.inf, np.inf  # catch any future value, not just the training range
+        counts, _ = np.histogram(values, bins=edges)
+        bins[col] = edges.tolist()
+        reference_proportions[col] = (counts / counts.sum()).tolist()
+
+    return {
+        "feature_cols": feature_cols,
+        "n_reference_samples": int(len(df)),
+        "bins": bins,
+        "reference_proportions": reference_proportions,
+    }
+
+
 # ── Save ───────────────────────────────────────────────────────────────────────
 def save_artifacts(model, explainer):
     joblib.dump(model, MODEL_OUT)
@@ -302,6 +331,11 @@ if __name__ == "__main__":
         with open(FEATURE_IMPORTANCE_OUT, "w") as f:
             json.dump(feature_importance, f, indent=2)
 
+        drift_reference = compute_drift_reference(df, FEATURE_COLS)
+        with open(DRIFT_REFERENCE_OUT, "w") as f:
+            json.dump(drift_reference, f, indent=2)
+        print(f"Saved drift reference ({drift_reference['n_reference_samples']} samples) → {DRIFT_REFERENCE_OUT}")
+
         mlflow.log_params({
             **XGB_PARAMS,
             "calib_frac": CALIB_FRAC,
@@ -314,6 +348,7 @@ if __name__ == "__main__":
         mlflow.log_artifact(FEATURE_IMPORTANCE_OUT)
         mlflow.log_artifact(EXPLAINER_OUT, artifact_path="explainer")
         mlflow.log_artifact(FEATURE_COLS_OUT)
+        mlflow.log_artifact(DRIFT_REFERENCE_OUT)
         mlflow.sklearn.log_model(
             production_model, artifact_path="model", registered_model_name=REGISTERED_MODEL_NAME,
         )

@@ -78,3 +78,33 @@ def test_predict_wrong_type_rejected(client):
 def test_predict_empty_body_rejected(client):
     resp = client.post("/predict", json={})
     assert resp.status_code == 422
+
+
+def test_metrics_exposes_prometheus_format(client):
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert "http_requests_total" in resp.text
+    assert "http_request_duration_highr_seconds_bucket" in resp.text
+
+
+def test_drift_reports_insufficient_data_before_min_samples(client):
+    resp = client.get("/drift")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] in ("insufficient_data", "none", "moderate", "significant")
+    assert "reference_samples" in body
+    assert body["reference_samples"] > 0
+
+
+def test_drift_reflects_recorded_predictions(client):
+    for _ in range(35):
+        client.post("/predict", json={"home_team": "BOS", "away_team": "MIA"})
+    resp = client.get("/drift")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["window_samples"] >= 35
+    assert body["status"] in ("none", "moderate", "significant")
+    assert len(body["features"]) > 0
+    for feat, info in body["features"].items():
+        assert "psi" in info and "rating" in info
+        assert info["rating"] in ("none", "moderate", "significant")

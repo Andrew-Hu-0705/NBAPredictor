@@ -1,9 +1,12 @@
 import hashlib
+import json
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from prometheus_fastapi_instrumentator import Instrumentator
 
+from api.drift import DriftMonitor
 from api.logging_conf import get_logger, log_event
 from api.registry import load_production_model
 from api.schemas import HealthResponse, PredictRequest, PredictResponse, ShapFactor
@@ -12,6 +15,7 @@ from predict import load_artifacts, load_features, predict_game
 logger = get_logger()
 
 ARTIFACTS = {}
+DRIFT_REFERENCE_PATH = "drift_reference.json"
 
 
 @asynccontextmanager
@@ -38,11 +42,20 @@ async def lifespan(app: FastAPI):
         log_event(logger, "startup: artifacts loaded", event="startup", ok=True, source=source)
     except Exception as exc:
         log_event(logger, "startup: failed to load artifacts", event="startup", ok=False, error=str(exc))
+
+    try:
+        with open(DRIFT_REFERENCE_PATH) as f:
+            ARTIFACTS["drift_monitor"] = DriftMonitor(json.load(f))
+    except FileNotFoundError:
+        ARTIFACTS["drift_monitor"] = None
+        log_event(logger, "startup: no drift_reference.json found, /drift disabled", event="startup", ok=True)
+
     yield
     ARTIFACTS.clear()
 
 
 app = FastAPI(title="NBA Game Outcome Predictor", version="1.0.0", lifespan=lifespan)
+Instrumentator().instrument(app).expose(app)  # GET /metrics — request latency histogram, count, in-progress
 
 
 @app.get("/")
@@ -89,6 +102,9 @@ def predict(req: PredictRequest):
 
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
 
+    if ARTIFACTS.get("drift_monitor") is not None:
+        ARTIFACTS["drift_monitor"].record(result["feature_values"])
+
     pairs = sorted(
         zip(result["shap_values"], result["feature_cols"], result["feature_values"]),
         key=lambda x: abs(x[0]),
@@ -122,3 +138,11 @@ def predict(req: PredictRequest):
     )
 
     return response
+
+
+@app.get("/drift")
+def drift():
+    monitor = ARTIFACTS.get("drift_monitor")
+    if monitor is None:
+        raise HTTPException(status_code=404, detail="No drift_reference.json was found at startup")
+    return monitor.report()

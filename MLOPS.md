@@ -194,3 +194,90 @@ Verified the fix with the exact `requirements-api.txt` pin set, isolated
 from every other dependency, in a clean Python 3.11 venv: both artifacts
 load, `/health` reports `model_loaded: true`, and `/predict` returns the
 correct response including the full SHAP breakdown.
+
+## Monitoring
+
+`GET /metrics` (via `prometheus-fastapi-instrumentator`) exposes Prometheus
+metrics with no custom code beyond one line in `api/main.py`:
+`Instrumentator().instrument(app).expose(app)`. What it gives you:
+
+- `http_requests_total{handler,method,status}` — request counts, so request
+  rate (`sum(rate(http_requests_total[1m])) by (handler)`) and error rate
+  (`sum(rate(http_requests_total{status!~"2.."}[1m])) / sum(rate(...))`) are
+  both PromQL one-liners, no app code involved.
+- `http_request_duration_highr_seconds_bucket` — a high-resolution latency
+  histogram (aggregate across endpoints), which is what
+  `histogram_quantile(0.50/0.95/0.99, ...)` reads for p50/p95/p99.
+
+`docker-compose.yml` runs Prometheus (scraping the API every 5s, config in
+`monitoring/prometheus.yml`) and Grafana (anonymous viewer access, no login
+needed) with one dashboard auto-provisioned from
+`monitoring/grafana/dashboards/nba-predictor.json` — 4 panels: requests/sec,
+error rate, p50/p95/p99 latency, total requests by status.
+
+```bash
+docker compose up --build
+# Grafana:    http://localhost:3000  (dashboard auto-loaded, no login needed)
+# Prometheus: http://localhost:9090
+```
+
+I could not verify the Prometheus/Grafana containers actually come up
+correctly — no Docker on this machine, same caveat as Stages 2-4. What I did
+verify directly: `/metrics` returns real Prometheus-format output with the
+exact metric names the dashboard's queries reference (checked against a live
+`/metrics` response, not assumed from the library's docs).
+
+The live Render deployment does **not** have Prometheus/Grafana attached —
+that's local/docker-compose only, since the free tier is a single web
+service with no natural place to run a second scrape target. For the live
+deployment, the structured JSON request logs from Stage 1 (timestamp,
+latency, status) are the production monitoring signal; Stage 7 computes
+percentiles from those directly.
+
+## Load testing
+
+`locustfile.py` drives `/predict` (9:1 weighted over `/health`, since that's
+where real traffic would concentrate) with random valid team matchups drawn
+from `teams.py`.
+
+```bash
+# Interactive UI
+locust --host http://localhost:8000
+
+# Headless, with a CSV report (includes p50/p95/p99, RPS, failure rate)
+locust --headless -u 20 -r 5 -t 60s --host http://localhost:8000 --csv=results
+
+# Against the live deployment
+locust --headless -u 20 -r 5 -t 60s --host https://nba-predictor-api-zxwo.onrender.com --csv=results
+```
+
+Ran it locally as a smoke test (10 users, 20s): 139 requests, **0 failures**,
+`/predict` p50=9ms / p95=60ms / p99=70ms / max=90ms, ~7.7 req/s sustained.
+That's real output from this run, not a made-up number — but it's 10 users
+against localhost, not a serious load test. Stage 7 runs this against the
+live Render URL at meaningful concurrency for the numbers that actually go
+on a resume.
+
+## Data drift check
+
+`train.py` computes a **reference distribution** for each of the model's 19
+features from the training data: quantile-based bin edges (deciles) plus the
+proportion of training rows falling in each bin, saved to
+`drift_reference.json` alongside the other artifacts (and logged to MLflow,
+so it's versioned with the run that produced it).
+
+At runtime, `api/drift.py`'s `DriftMonitor` keeps an in-memory ring buffer of
+the last 500 requests' feature vectors (no database — a single-instance
+portfolio deployment doesn't need one, and restarting resets the window,
+which is fine for "has anything looked weird lately," not an audit trail).
+`GET /drift` buckets the current window into the same bins as the reference
+and computes the **Population Stability Index (PSI)** per feature —
+industry-standard thresholds: PSI < 0.1 none, 0.1-0.25 moderate, > 0.25
+significant. Returns `insufficient_data` until 30 requests have landed.
+
+This is intentionally the simple version: no automated alerting, no
+comparison across time windows, just "call `/drift`, see whether recent
+traffic looks like training data." Verified with unit tests that feed the
+monitor synthetic data landing in the same bins as the reference (should
+score low PSI) versus data concentrated in a single bin (should score
+`significant`) — see `tests/test_drift.py`.
