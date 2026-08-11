@@ -45,6 +45,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="NBA Game Outcome Predictor", version="1.0.0", lifespan=lifespan)
 
 
+@app.get("/")
+def root():
+    return {"service": "nba-predictor-api", "docs": "/docs", "health": "/health"}
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     model_loaded = ARTIFACTS.get("model") is not None and ARTIFACTS.get("explainer") is not None

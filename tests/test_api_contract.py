@@ -2,6 +2,14 @@
 and does the API reject bad input the way it's supposed to."""
 
 
+def test_root_returns_ok(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["docs"] == "/docs"
+    assert body["health"] == "/health"
+
+
 def test_health_reports_ready(client):
     resp = client.get("/health")
     assert resp.status_code == 200
