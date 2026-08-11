@@ -3,7 +3,9 @@ import json
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from api.drift import DriftMonitor
@@ -11,6 +13,7 @@ from api.logging_conf import get_logger, log_event
 from api.registry import load_production_model
 from api.schemas import HealthResponse, PredictRequest, PredictResponse, ShapFactor
 from predict import load_artifacts, load_features, predict_game
+from teams import NBA_TEAMS
 
 logger = get_logger()
 
@@ -57,10 +60,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="NBA Game Outcome Predictor", version="1.0.0", lifespan=lifespan)
 Instrumentator().instrument(app).expose(app)  # GET /metrics — request latency histogram, count, in-progress
 
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
 
 @app.get("/")
-def root():
-    return {"service": "nba-predictor-api", "docs": "/docs", "health": "/health"}
+def root(request: Request):
+    return templates.TemplateResponse(request=request, name="index.html", context={"teams": NBA_TEAMS})
 
 
 @app.get("/health", response_model=HealthResponse)

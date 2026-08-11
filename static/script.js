@@ -1,3 +1,16 @@
+// The API (FastAPI) returns errors as `{"detail": "..."}` for a plain
+// string message (e.g. unknown team) or `{"detail": [{"msg": "...", ...}]}`
+// for Pydantic validation errors (e.g. same team twice).
+function extractErrorMessage(data) {
+    if (typeof data.detail === 'string') {
+        return data.detail;
+    }
+    if (Array.isArray(data.detail) && data.detail.length > 0) {
+        return data.detail.map(e => e.msg || JSON.stringify(e)).join('; ');
+    }
+    return 'Prediction failed';
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const form = document.getElementById('prediction-form');
     const predictBtn = document.getElementById('predict-btn');
@@ -44,7 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.error || "Prediction failed");
+                throw new Error(extractErrorMessage(data));
             }
 
             renderResults(data);
@@ -79,8 +92,11 @@ document.addEventListener('DOMContentLoaded', () => {
         
         document.getElementById('confidence-value').textContent = `${(data.confidence * 100).toFixed(1)}%`;
 
-        // Chart
-        renderChart(data.shap_values, data.feature_cols);
+        // Chart — shap_explanation is already sorted by |impact| descending
+        renderChart(
+            data.shap_explanation.map(f => f.shap_value),
+            data.shap_explanation.map(f => f.feature),
+        );
 
         // Show results
         resultsSection.classList.remove('hidden');

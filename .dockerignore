@@ -15,10 +15,9 @@ shap_summary.png
 train.py
 fetch_data.py
 
-# Legacy Flask UI — not part of the API image
+# Legacy standalone Flask entrypoint — not needed (its templates/static
+# assets are served directly by the FastAPI app, see api/main.py)
 app.py
-static/
-templates/
 
 README.md
 mlruns/

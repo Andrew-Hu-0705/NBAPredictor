@@ -2,12 +2,21 @@
 and does the API reject bad input the way it's supposed to."""
 
 
-def test_root_returns_ok(client):
+def test_root_serves_the_ui(client):
     resp = client.get("/")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["docs"] == "/docs"
-    assert body["health"] == "/health"
+    assert "text/html" in resp.headers["content-type"]
+    assert "NBA Game Predictor" in resp.text
+    # Every team should appear as a <select> option
+    assert 'value="BOS"' in resp.text
+    assert 'value="LAL"' in resp.text
+
+
+def test_static_assets_are_served(client):
+    resp = client.get("/static/style.css")
+    assert resp.status_code == 200
+    resp = client.get("/static/script.js")
+    assert resp.status_code == 200
 
 
 def test_health_reports_ready(client):
